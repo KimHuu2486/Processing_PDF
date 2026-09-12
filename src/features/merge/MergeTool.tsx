@@ -6,15 +6,12 @@ import {
   FileDropzone,
   IconButton,
   InlineError,
-  LargeFileWarningDialog,
   ProcessingProgress,
   ResultDownload,
   SortableGrid,
   ToolLayout,
 } from "../../components";
 import {
-  LARGE_FILE_BYTES,
-  LARGE_PAGE_COUNT,
   sanitizePdfFilename,
   type PdfJob,
 } from "../../pdf";
@@ -27,25 +24,23 @@ import {
   type SelectedPdf,
 } from "../shared/toolUtils";
 import { PdfFileThumbnail } from "../shared/PdfFileThumbnail";
-import { useInputParsing } from "../shared/useInputParsing";
+import { useFileAdmission } from "../shared/useFileAdmission";
+import { FileAdmissionFeedback } from "../shared/FileAdmissionFeedback";
 
 type MergeItem = SelectedPdf & { id: string };
-type PendingMerge =
-  | {
-      kind: "raw-files";
-      files: File[];
-      totalBytes: number;
-      knownPages: number;
-    }
-  | { kind: "parsed"; items: MergeItem[] };
-
 export function MergeTool() {
   const [items, setItems] = useState<MergeItem[]>([]);
-  const [pendingMerge, setPendingMerge] = useState<PendingMerge | null>(null);
   const [outputName, setOutputName] = useState("merged.pdf");
   const [inputError, setInputError] = useState<string | null>(null);
   const job = usePdfJob();
-  const inputParsing = useInputParsing();
+  const admission = useFileAdmission({
+    kind: "pdf",
+    parse: selectPdf,
+    existing: items,
+    onAccepted: (loaded) => setItems((current) => [
+      ...current, ...loaded.map((item) => ({ ...item, id: crypto.randomUUID() })),
+    ]),
+  });
 
   const totals = useMemo(
     () => ({
@@ -54,55 +49,6 @@ export function MergeTool() {
     }),
     [items],
   );
-
-  async function parseAndAdd(files: File[], sizeApproved: boolean) {
-    setInputError(null);
-    try {
-      const parsed = await inputParsing.runInputParsing(async () => {
-        const loaded: MergeItem[] = [];
-        for (const file of files) {
-          loaded.push({
-            ...(await selectPdf(file)),
-            id: crypto.randomUUID(),
-          });
-        }
-        return loaded;
-      });
-      if (!parsed.current) return;
-      const loaded = parsed.value;
-      const next = [...items, ...loaded];
-      const bytes = next.reduce((sum, item) => sum + item.file.size, 0);
-      const pages = next.reduce((sum, item) => sum + item.pageCount, 0);
-      if (
-        (!sizeApproved && bytes > LARGE_FILE_BYTES) ||
-        pages > LARGE_PAGE_COUNT
-      ) {
-        setPendingMerge({ kind: "parsed", items: next });
-      } else {
-        setItems(next);
-      }
-    } catch (error) {
-      setInputError(
-        error instanceof Error ? error.message : "Không thể thêm file PDF.",
-      );
-    }
-  }
-
-  async function addFiles(files: File[]) {
-    if (inputParsing.isParsing) return;
-    const totalBytes =
-      totals.bytes + files.reduce((sum, file) => sum + file.size, 0);
-    if (totalBytes > LARGE_FILE_BYTES) {
-      setPendingMerge({
-        kind: "raw-files",
-        files,
-        totalBytes,
-        knownPages: totals.pages,
-      });
-      return;
-    }
-    await parseAndAdd(files, false);
-  }
 
   async function process() {
     if (items.length < 2) {
@@ -123,9 +69,8 @@ export function MergeTool() {
   }
 
   function resetAll() {
-    inputParsing.cancelInputParsing();
+    admission.reset();
     setItems([]);
-    setPendingMerge(null);
     setOutputName("merged.pdf");
     setInputError(null);
     job.reset();
@@ -137,7 +82,7 @@ export function MergeTool() {
       description="Kết hợp nhiều tài liệu theo đúng thứ tự bạn chọn."
       icon={<Merge aria-hidden="true" />}
       onReset={resetAll}
-      hasChanges={items.length > 0}
+      hasChanges={items.length > 0 || admission.isBusy}
       notice="Mọi file chỉ được xử lý trong bộ nhớ của thiết bị."
     >
       <div className="space-y-6">
@@ -145,24 +90,20 @@ export function MergeTool() {
           accept={["application/pdf", ".pdf"]}
           multiple
           disabled={
-            inputParsing.isParsing ||
+            admission.isBusy ||
             job.status === "processing" ||
             job.status === "done"
           }
           title="Thả các file PDF vào đây"
           description="Chọn từ hai file trở lên. Bạn có thể thêm file nhiều lần."
-          onFiles={addFiles}
+          onFiles={admission.addFiles}
           onError={setInputError}
         />
 
         {inputError && (
           <InlineError message={inputError} onDismiss={() => setInputError(null)} />
         )}
-        {inputParsing.isParsing && (
-          <p className="text-sm text-slate-600" role="status">
-            Đang kiểm tra cấu trúc và số trang PDF…
-          </p>
-        )}
+        <FileAdmissionFeedback admission={admission} />
         {job.error && (
           <InlineError message={job.error} onDismiss={job.dismissError} />
         )}
@@ -186,7 +127,7 @@ export function MergeTool() {
               label="Các file PDF có thể sắp xếp"
               className="lg:grid-cols-2 xl:grid-cols-2"
               disabled={
-                inputParsing.isParsing ||
+                admission.isBusy ||
                 job.status === "processing" ||
                 job.status === "done"
               }
@@ -212,7 +153,7 @@ export function MergeTool() {
                       variant="ghost"
                       className="text-red-700 hover:bg-red-50"
                       isDisabled={
-                        inputParsing.isParsing ||
+                        admission.isBusy ||
                         job.status === "processing" ||
                         job.status === "done"
                       }
@@ -251,7 +192,7 @@ export function MergeTool() {
                 variant="primary"
                 onPress={process}
                 isDisabled={
-                  inputParsing.isParsing ||
+                  admission.isBusy ||
                   items.length < 2 ||
                   job.status === "processing"
                 }
@@ -279,38 +220,6 @@ export function MergeTool() {
         )}
       </div>
 
-      <LargeFileWarningDialog
-        isOpen={pendingMerge !== null}
-        onOpenChange={(open) => {
-          if (!open) setPendingMerge(null);
-        }}
-        totalBytes={
-          pendingMerge?.kind === "raw-files"
-            ? pendingMerge.totalBytes
-            : pendingMerge?.items.reduce(
-                (sum, item) => sum + item.file.size,
-                0,
-              ) ?? 0
-        }
-        totalPages={
-          pendingMerge?.kind === "raw-files"
-            ? pendingMerge.knownPages || undefined
-            : pendingMerge?.items.reduce(
-                (sum, item) => sum + item.pageCount,
-                0,
-              )
-        }
-        onContinue={() => {
-          const approved = pendingMerge;
-          setPendingMerge(null);
-          if (approved?.kind === "raw-files") {
-            void parseAndAdd(approved.files, true);
-          } else if (approved?.kind === "parsed") {
-            setItems(approved.items);
-          }
-        }}
-        onCancel={() => setPendingMerge(null)}
-      />
     </ToolLayout>
   );
 }

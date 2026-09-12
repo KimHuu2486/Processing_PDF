@@ -5,14 +5,11 @@ import {
   Button,
   FileDropzone,
   InlineError,
-  LargeFileWarningDialog,
   ProcessingProgress,
   ResultDownload,
   ToolLayout,
 } from "../../components";
 import {
-  LARGE_FILE_BYTES,
-  LARGE_PAGE_COUNT,
   defaultOutputName,
   sanitizePdfFilename,
   validatePageRange,
@@ -23,15 +20,13 @@ import { cn } from "../../lib/cn";
 import { PdfPageCanvas } from "../shared/pdfPreview";
 import { usePdfDocument } from "../shared/usePdfDocument";
 import { usePdfJob } from "../shared/usePdfJob";
-import { useInputParsing } from "../shared/useInputParsing";
+import { useFileAdmission } from "../shared/useFileAdmission";
+import { FileAdmissionFeedback } from "../shared/FileAdmissionFeedback";
 import {
   bytesLabel,
   makeJobId,
-  pendingPdfBytes,
-  pendingPdfPages,
   selectPdf,
   toPdfInput,
-  type PendingSinglePdf,
   type SelectedPdf,
 } from "../shared/toolUtils";
 
@@ -58,8 +53,6 @@ function previewPosition(position: PageNumberPosition) {
 
 export function PageNumbersTool() {
   const [source, setSource] = useState<NumberSource | null>(null);
-  const [pending, setPending] =
-    useState<PendingSinglePdf<NumberSource> | null>(null);
   const [start, setStart] = useState(1);
   const [end, setEnd] = useState(1);
   const [startNumber, setStartNumber] = useState(1);
@@ -71,7 +64,11 @@ export function PageNumbersTool() {
   const [outputName, setOutputName] = useState("numbered.pdf");
   const [inputError, setInputError] = useState<string | null>(null);
   const job = usePdfJob();
-  const inputParsing = useInputParsing();
+  const admission = useFileAdmission({
+    kind: "pdf",
+    parse: selectPdf,
+    onAccepted: (loaded) => applySource({ ...loaded[0], id: crypto.randomUUID() }),
+  });
   const preview = usePdfDocument(source?.file ?? null);
 
   const applySource = useCallback(
@@ -92,37 +89,6 @@ export function PageNumbersTool() {
     },
     [job],
   );
-
-  async function parseSelection(file: File) {
-    setInputError(null);
-    try {
-      const parsed = await inputParsing.runInputParsing(() => selectPdf(file));
-      if (!parsed.current) return;
-      const selected = parsed.value;
-      const next = { ...selected, id: crypto.randomUUID() };
-      if (next.pageCount > LARGE_PAGE_COUNT) {
-        setPending({ kind: "parsed", value: next });
-      } else {
-        applySource(next);
-      }
-    } catch (error) {
-      setInputError(
-        error instanceof Error ? error.message : "Không thể đọc file PDF.",
-      );
-    }
-  }
-
-  async function choose(files: File[]) {
-    if (inputParsing.isParsing) return;
-    const file = files[0];
-    if (!file) return;
-    setInputError(null);
-    if (file.size > LARGE_FILE_BYTES) {
-      setPending({ kind: "raw-file", file });
-      return;
-    }
-    await parseSelection(file);
-  }
 
   async function process() {
     if (!source) return;
@@ -159,9 +125,8 @@ export function PageNumbersTool() {
   }
 
   function resetAll() {
-    inputParsing.cancelInputParsing();
+    admission.reset();
     setSource(null);
-    setPending(null);
     setInputError(null);
     setOutputName("numbered.pdf");
     job.reset();
@@ -176,16 +141,16 @@ export function PageNumbersTool() {
       description="Thêm số vào một khoảng trang với vị trí và kiểu hiển thị bạn chọn."
       icon={<Hash aria-hidden="true" />}
       onReset={resetAll}
-      hasChanges={source !== null}
+      hasChanges={source !== null || admission.isBusy}
       notice="Các trang ngoài phạm vi sẽ được giữ nguyên và không có số mới."
     >
       <div className="space-y-6">
         {!source && (
           <FileDropzone
             accept={["application/pdf", ".pdf"]}
-            disabled={inputParsing.isParsing}
+            disabled={admission.isBusy}
             title="Chọn một file PDF để đánh số"
-            onFiles={choose}
+            onFiles={admission.addFiles}
             onError={setInputError}
           />
         )}
@@ -200,11 +165,7 @@ export function PageNumbersTool() {
         {job.error && (
           <InlineError message={job.error} onDismiss={job.dismissError} />
         )}
-        {inputParsing.isParsing && (
-          <p className="text-sm text-slate-600" role="status">
-            Đang kiểm tra cấu trúc và số trang PDF…
-          </p>
-        )}
+        <FileAdmissionFeedback admission={admission} />
 
         {source && job.status !== "done" && (
           <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(18rem,26rem)]">
@@ -401,24 +362,6 @@ export function PageNumbersTool() {
         )}
       </div>
 
-      <LargeFileWarningDialog
-        isOpen={pending !== null}
-        onOpenChange={(open) => {
-          if (!open) setPending(null);
-        }}
-        totalBytes={pendingPdfBytes(pending)}
-        totalPages={pendingPdfPages(pending)}
-        onContinue={() => {
-          const approved = pending;
-          setPending(null);
-          if (approved?.kind === "raw-file") {
-            void parseSelection(approved.file);
-          } else if (approved?.kind === "parsed") {
-            applySource(approved.value);
-          }
-        }}
-        onCancel={() => setPending(null)}
-      />
     </ToolLayout>
   );
 }

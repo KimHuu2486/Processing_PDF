@@ -5,7 +5,6 @@ import {
   Button,
   FileDropzone,
   InlineError,
-  LargeFileWarningDialog,
   ProcessingProgress,
   ResultDownload,
   ToolLayout,
@@ -15,22 +14,17 @@ import {
   sanitizePdfFilename,
   type PdfJob,
 } from "../../pdf";
+import { useFileAdmission } from "../shared/useFileAdmission";
+import { FileAdmissionFeedback } from "../shared/FileAdmissionFeedback";
 import { ImageGridEditor } from "../shared/ImageGridEditor";
 import {
-  createSelectedImages,
+  selectImage,
   releaseSelectedImage,
   rotateImage,
-  shouldWarnImageCollection,
   type SelectedImage,
 } from "../shared/imageItems";
 import { usePdfJob } from "../shared/usePdfJob";
 import { bytesLabel, makeJobId } from "../shared/toolUtils";
-
-type PendingImages = {
-  all: SelectedImage[];
-  added: SelectedImage[];
-  replaced?: SelectedImage[];
-};
 
 function cameraErrorMessage(error: unknown) {
   if (error instanceof DOMException) {
@@ -59,7 +53,6 @@ function canvasToJpeg(canvas: HTMLCanvasElement): Promise<Blob> {
 
 export function ScanToPdfTool() {
   const [items, setItems] = useState<SelectedImage[]>([]);
-  const [pending, setPending] = useState<PendingImages | null>(null);
   const [stream, setStream] = useState<MediaStream | null>(null);
   const [cameraBusy, setCameraBusy] = useState(false);
   const [capturing, setCapturing] = useState(false);
@@ -69,19 +62,22 @@ export function ScanToPdfTool() {
   const [inputError, setInputError] = useState<string | null>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
   const itemsRef = useRef(items);
-  const pendingRef = useRef(pending);
   const streamRef = useRef<MediaStream | null>(null);
   const cameraGeneration = useRef(0);
   const mountedRef = useRef(true);
   const captureRun = useRef(false);
   const job = usePdfJob();
+  const admission = useFileAdmission({
+    kind: "image",
+    parse: selectImage,
+    release: releaseSelectedImage,
+    existing: items,
+    onAccepted: (added) => setItems((current) => [...current, ...added]),
+  });
 
   useEffect(() => {
     itemsRef.current = items;
   }, [items]);
-  useEffect(() => {
-    pendingRef.current = pending;
-  }, [pending]);
   useEffect(() => {
     const video = videoRef.current;
     if (!stream || !video) return;
@@ -115,7 +111,6 @@ export function ScanToPdfTool() {
       cameraGeneration.current += 1;
       streamRef.current?.getTracks().forEach((track) => track.stop());
       itemsRef.current.forEach(releaseSelectedImage);
-      pendingRef.current?.added.forEach(releaseSelectedImage);
     };
   }, []);
 
@@ -190,35 +185,28 @@ export function ScanToPdfTool() {
       const file = new File([blob], `scan-${timestamp}.jpg`, {
         type: "image/jpeg",
       });
-      const [captured] = createSelectedImages([file]);
-      if (!captured) return;
-
-      if (retakeId) {
-        const replaced = items.find((item) => item.id === retakeId);
-        if (!replaced) {
-          releaseSelectedImage(captured);
+      const replaced = items.find((item) => item.id === retakeId);
+      if (retakeId && !replaced) return;
+      await admission.addFiles([file], {
+        existing: replaced ? items.filter((item) => item.id !== replaced.id) : items,
+        onAccepted: (added) => {
+          if (!mountedRef.current || cameraGeneration.current !== captureGeneration) {
+            added.forEach(releaseSelectedImage);
+            return;
+          }
+          const captured = added[0];
+          if (replaced) {
+            releaseSelectedImage(replaced);
+            setItems((current) => current.map((item) =>
+              item.id === replaced.id ? { ...captured, id: replaced.id } : item,
+            ));
+          } else {
+            setItems((current) => [...current, captured]);
+          }
           setRetakeId(null);
-          return;
-        }
-        const next = items.map((item) =>
-          item.id === retakeId ? { ...captured, id: item.id } : item,
-        );
-        if (shouldWarnImageCollection(next)) {
-          setPending({ all: next, added: [captured], replaced: [replaced] });
-        } else {
-          releaseSelectedImage(replaced);
-          setItems(next);
-        }
-        setRetakeId(null);
-      } else {
-        const next = [...items, captured];
-        if (shouldWarnImageCollection(next)) {
-          setPending({ all: next, added: [captured] });
-        } else {
-          setItems(next);
-        }
-      }
-      setInputError(null);
+          setInputError(null);
+        },
+      });
     } catch (error) {
       setCameraError(
         error instanceof Error ? error.message : "Không thể chụp ảnh.",
@@ -231,28 +219,6 @@ export function ScanToPdfTool() {
       ) {
         setCapturing(false);
       }
-    }
-  }
-
-  function discardPending() {
-    pending?.added.forEach(releaseSelectedImage);
-    setPending(null);
-  }
-
-  async function addFiles(files: File[]) {
-    setInputError(null);
-    try {
-      const added = createSelectedImages(files);
-      const next = [...items, ...added];
-      if (shouldWarnImageCollection(next)) {
-        setPending({ all: next, added });
-      } else {
-        setItems(next);
-      }
-    } catch (error) {
-      setInputError(
-        error instanceof Error ? error.message : "Không thể thêm ảnh.",
-      );
     }
   }
 
@@ -302,9 +268,8 @@ export function ScanToPdfTool() {
   function resetAll() {
     stopCamera();
     items.forEach(releaseSelectedImage);
-    pending?.added.forEach(releaseSelectedImage);
+    admission.reset();
     setItems([]);
-    setPending(null);
     setCameraError(null);
     setCapturing(false);
     captureRun.current = false;
@@ -324,7 +289,7 @@ export function ScanToPdfTool() {
       description="Chụp nhiều trang bằng camera sau hoặc chọn ảnh có sẵn rồi ghép thành PDF."
       icon={<ScanLine aria-hidden="true" />}
       onReset={resetAll}
-      hasChanges={items.length > 0 || stream !== null}
+      hasChanges={items.length > 0 || stream !== null || admission.isBusy}
       notice="Tính năng này chỉ tạo PDF chứa ảnh, không nhận dạng ký tự (OCR). Camera cần HTTPS và quyền truy cập của bạn."
     >
       <div className="space-y-6">
@@ -341,7 +306,7 @@ export function ScanToPdfTool() {
                 variant="primary"
                 onPress={() => startCamera()}
                 isDisabled={
-                  cameraBusy ||
+                  admission.isBusy || cameraBusy ||
                   job.status === "processing" ||
                   job.status === "done"
                 }
@@ -350,7 +315,7 @@ export function ScanToPdfTool() {
                 {cameraBusy ? "Đang mở camera…" : "Mở camera"}
               </Button>
             ) : (
-              <Button variant="secondary" onPress={stopCamera}>
+              <Button variant="secondary" onPress={() => { admission.cancel(); stopCamera(); }}>
                 <CameraOff className="size-4" aria-hidden="true" />
                 Tắt camera
               </Button>
@@ -374,7 +339,7 @@ export function ScanToPdfTool() {
                   variant="primary"
                   size="lg"
                   onPress={capture}
-                  isDisabled={capturing}
+                  isDisabled={capturing || admission.isBusy}
                 >
                   <Camera className="size-5" aria-hidden="true" />
                   {capturing
@@ -387,7 +352,7 @@ export function ScanToPdfTool() {
                   <Button
                     onPress={() => setRetakeId(null)}
                     variant="ghost"
-                    isDisabled={capturing}
+                    isDisabled={capturing || admission.isBusy}
                   >
                     Hủy chụp lại
                   </Button>
@@ -409,17 +374,19 @@ export function ScanToPdfTool() {
           accept={["image/jpeg", "image/png", ".jpg", ".jpeg", ".png"]}
           multiple
           disabled={
-            job.status === "processing" ||
+            admission.isBusy || job.status === "processing" ||
             job.status === "done" ||
             capturing
           }
           title="Hoặc chọn ảnh từ thiết bị"
           description="Dùng khi không có camera, quyền bị từ chối hoặc bạn đã chụp ảnh trước đó."
           buttonLabel="Chọn ảnh"
-          onFiles={addFiles}
+          onFiles={admission.addFiles}
           onError={setInputError}
           className="min-h-52"
         />
+
+        <FileAdmissionFeedback admission={admission} />
 
         {inputError && (
           <InlineError
@@ -447,7 +414,7 @@ export function ScanToPdfTool() {
               onRetake={(id) => startCamera(id)}
               label="Các trang quét có thể sắp xếp"
               disabled={
-                job.status === "processing" || capturing || cameraBusy
+                admission.isBusy || job.status === "processing" || capturing || cameraBusy
               }
             />
 
@@ -468,7 +435,7 @@ export function ScanToPdfTool() {
                 <Button
                   variant="primary"
                   onPress={process}
-                  isDisabled={job.status === "processing"}
+                  isDisabled={admission.isBusy || job.status === "processing"}
                 >
                   Tạo PDF bản quét
                 </Button>
@@ -494,27 +461,6 @@ export function ScanToPdfTool() {
         )}
       </div>
 
-      <LargeFileWarningDialog
-        isOpen={pending !== null}
-        onOpenChange={(open) => {
-          if (!open) discardPending();
-        }}
-        totalBytes={
-          pending?.all.reduce(
-            (total, image) => total + image.file.size,
-            0,
-          ) ?? 0
-        }
-        totalPages={pending?.all.length ?? 0}
-        onContinue={() => {
-          if (pending) {
-            pending.replaced?.forEach(releaseSelectedImage);
-            setItems(pending.all);
-          }
-          setPending(null);
-        }}
-        onCancel={discardPending}
-      />
     </ToolLayout>
   );
 }

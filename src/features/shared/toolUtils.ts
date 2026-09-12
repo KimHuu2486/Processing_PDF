@@ -7,33 +7,14 @@ export type SelectedPdf = {
   pageCount: number;
 };
 
-export type PendingSinglePdf<T extends SelectedPdf = SelectedPdf> =
-  | { kind: "raw-file"; file: File }
-  | { kind: "parsed"; value: T };
-
-export function pendingPdfBytes<T extends SelectedPdf>(
-  pending: PendingSinglePdf<T> | null,
-): number {
-  if (!pending) return 0;
-  return pending.kind === "raw-file"
-    ? pending.file.size
-    : pending.value.file.size;
-}
-
-export function pendingPdfPages<T extends SelectedPdf>(
-  pending: PendingSinglePdf<T> | null,
-): number | undefined {
-  return pending?.kind === "parsed" ? pending.value.pageCount : undefined;
-}
-
-export async function selectPdf(file: File): Promise<SelectedPdf> {
+export async function selectPdf(file: File, signal?: AbortSignal): Promise<SelectedPdf> {
   if (
     file.type !== "application/pdf" &&
     !file.name.toLowerCase().endsWith(".pdf")
   ) {
     throw new Error("Vui lòng chọn file PDF.");
   }
-  const { pageCount } = await readPdfMetadata(file);
+  const { pageCount } = await readPdfMetadata(file, signal);
   return { file, pageCount };
 }
 

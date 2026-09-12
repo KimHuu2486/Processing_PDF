@@ -5,7 +5,6 @@ import {
   Button,
   FileDropzone,
   InlineError,
-  LargeFileWarningDialog,
   ProcessingProgress,
   ResultDownload,
   ToolLayout,
@@ -16,73 +15,47 @@ import {
   sanitizePdfFilename,
   type PdfJob,
 } from "../../pdf";
+import { useFileAdmission } from "../shared/useFileAdmission";
+import { FileAdmissionFeedback } from "../shared/FileAdmissionFeedback";
 import { ImageGridEditor } from "../shared/ImageGridEditor";
 import {
-  createSelectedImages,
+  selectImage,
   releaseSelectedImage,
   rotateImage,
-  shouldWarnImageCollection,
   type SelectedImage,
 } from "../shared/imageItems";
 import { usePdfJob } from "../shared/usePdfJob";
 import { bytesLabel, makeJobId } from "../shared/toolUtils";
 
-type PendingImages = {
-  all: SelectedImage[];
-  added: SelectedImage[];
-};
-
 export function ImagesToPdfTool() {
   const [items, setItems] = useState<SelectedImage[]>([]);
-  const [pending, setPending] = useState<PendingImages | null>(null);
   const [outputName, setOutputName] = useState("images.pdf");
   const [inputError, setInputError] = useState<string | null>(null);
   const itemsRef = useRef(items);
-  const pendingRef = useRef(pending);
   const job = usePdfJob();
 
   useEffect(() => {
     itemsRef.current = items;
   }, [items]);
-  useEffect(() => {
-    pendingRef.current = pending;
-  }, [pending]);
   useEffect(
     () => () => {
       itemsRef.current.forEach(releaseSelectedImage);
-      pendingRef.current?.added.forEach(releaseSelectedImage);
     },
     [],
   );
 
-  function discardPending() {
-    pending?.added.forEach(releaseSelectedImage);
-    setPending(null);
-  }
-
-  async function addFiles(files: File[]) {
-    setInputError(null);
-    try {
-      const added = createSelectedImages(files);
-      const next = [...items, ...added];
-      if (shouldWarnImageCollection(next)) {
-        setPending({ all: next, added });
-      } else {
-        setItems(next);
-        if (items.length === 0 && added[0]) {
-          setOutputName(
-            defaultOutputName("images-to-pdf", [
-              { name: added[0].file.name },
-            ]),
-          );
-        }
+  const admission = useFileAdmission({
+    kind: "image",
+    parse: selectImage,
+    release: releaseSelectedImage,
+    existing: items,
+    onAccepted: (added) => {
+      setItems((current) => [...current, ...added]);
+      if (items.length === 0) {
+        setOutputName(defaultOutputName("images-to-pdf", [{ name: added[0].file.name }]));
       }
-    } catch (error) {
-      setInputError(
-        error instanceof Error ? error.message : "Không thể thêm ảnh.",
-      );
-    }
-  }
+    },
+  });
 
   function remove(id: string) {
     setItems((current) => {
@@ -128,9 +101,8 @@ export function ImagesToPdfTool() {
 
   function resetAll() {
     items.forEach(releaseSelectedImage);
-    pending?.added.forEach(releaseSelectedImage);
+    admission.reset();
     setItems([]);
-    setPending(null);
     setOutputName("images.pdf");
     setInputError(null);
     job.reset();
@@ -147,7 +119,7 @@ export function ImagesToPdfTool() {
       description="Ghép nhiều ảnh JPG hoặc PNG thành các trang PDF A4 rõ nét."
       icon={<Images aria-hidden="true" />}
       onReset={resetAll}
-      hasChanges={items.length > 0}
+      hasChanges={items.length > 0 || admission.isBusy}
       notice="Mỗi ảnh tạo thành một trang A4 tự chọn dọc hoặc ngang, nền trắng và lề 24 pt."
     >
       <div className="space-y-6">
@@ -155,14 +127,16 @@ export function ImagesToPdfTool() {
           accept={["image/jpeg", "image/png", ".jpg", ".jpeg", ".png"]}
           multiple
           disabled={
-            job.status === "processing" || job.status === "done"
+            admission.isBusy || job.status === "processing" || job.status === "done"
           }
           title="Thả ảnh JPG hoặc PNG vào đây"
           description="Bạn có thể thêm nhiều lần, rồi sắp xếp và xoay từng ảnh."
           buttonLabel="Chọn ảnh"
-          onFiles={addFiles}
+          onFiles={admission.addFiles}
           onError={setInputError}
         />
+
+        <FileAdmissionFeedback admission={admission} />
 
         {inputError && (
           <InlineError
@@ -187,7 +161,7 @@ export function ImagesToPdfTool() {
               onReorder={setItems}
               onRotate={rotate}
               onDelete={remove}
-              disabled={job.status === "processing"}
+              disabled={admission.isBusy || job.status === "processing"}
             />
 
             <section className="rounded-xl border border-slate-200 bg-white p-4">
@@ -207,7 +181,7 @@ export function ImagesToPdfTool() {
                 <Button
                   variant="primary"
                   onPress={process}
-                  isDisabled={job.status === "processing"}
+                  isDisabled={admission.isBusy || job.status === "processing"}
                 >
                   Tạo PDF từ ảnh
                 </Button>
@@ -233,34 +207,6 @@ export function ImagesToPdfTool() {
         )}
       </div>
 
-      <LargeFileWarningDialog
-        isOpen={pending !== null}
-        onOpenChange={(open) => {
-          if (!open) discardPending();
-        }}
-        totalBytes={
-          pending?.all.reduce(
-            (total, image) => total + image.file.size,
-            0,
-          ) ?? 0
-        }
-        totalPages={pending?.all.length ?? 0}
-        onContinue={() => {
-          if (pending) {
-            const wasEmpty = items.length === 0;
-            setItems(pending.all);
-            if (wasEmpty && pending.added[0]) {
-              setOutputName(
-                defaultOutputName("images-to-pdf", [
-                  { name: pending.added[0].file.name },
-                ]),
-              );
-            }
-          }
-          setPending(null);
-        }}
-        onCancel={discardPending}
-      />
     </ToolLayout>
   );
 }

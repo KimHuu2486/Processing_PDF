@@ -6,15 +6,12 @@ import {
   FileDropzone,
   IconButton,
   InlineError,
-  LargeFileWarningDialog,
   ProcessingProgress,
   ResultDownload,
   SortableGrid,
   ToolLayout,
 } from "../../components";
 import {
-  LARGE_FILE_BYTES,
-  LARGE_PAGE_COUNT,
   defaultOutputName,
   sanitizePdfFilename,
   type PageRef,
@@ -24,15 +21,13 @@ import {
 import { LazyPdfPageCanvas } from "../shared/pdfPreview";
 import { usePdfDocument } from "../shared/usePdfDocument";
 import { usePdfJob } from "../shared/usePdfJob";
-import { useInputParsing } from "../shared/useInputParsing";
+import { useFileAdmission } from "../shared/useFileAdmission";
+import { FileAdmissionFeedback } from "../shared/FileAdmissionFeedback";
 import {
   bytesLabel,
   makeJobId,
-  pendingPdfBytes,
-  pendingPdfPages,
   selectPdf,
   toPdfInput,
-  type PendingSinglePdf,
   type SelectedPdf,
 } from "../shared/toolUtils";
 
@@ -49,13 +44,15 @@ function makePages(source: OrganizeSource): PageRef[] {
 
 export function OrganizeTool() {
   const [source, setSource] = useState<OrganizeSource | null>(null);
-  const [pending, setPending] =
-    useState<PendingSinglePdf<OrganizeSource> | null>(null);
   const [pages, setPages] = useState<PageRef[]>([]);
   const [outputName, setOutputName] = useState("organized.pdf");
   const [inputError, setInputError] = useState<string | null>(null);
   const job = usePdfJob();
-  const inputParsing = useInputParsing();
+  const admission = useFileAdmission({
+    kind: "pdf",
+    parse: selectPdf,
+    onAccepted: (loaded) => applySource({ ...loaded[0], id: crypto.randomUUID() }),
+  });
   const preview = usePdfDocument(source?.file ?? null);
 
   const hasPageChanges = useMemo(
@@ -78,37 +75,6 @@ export function OrganizeTool() {
     },
     [job],
   );
-
-  async function parseSelection(file: File) {
-    setInputError(null);
-    try {
-      const parsed = await inputParsing.runInputParsing(() => selectPdf(file));
-      if (!parsed.current) return;
-      const selected = parsed.value;
-      const next = { ...selected, id: crypto.randomUUID() };
-      if (next.pageCount > LARGE_PAGE_COUNT) {
-        setPending({ kind: "parsed", value: next });
-      } else {
-        applySource(next);
-      }
-    } catch (error) {
-      setInputError(
-        error instanceof Error ? error.message : "Không thể đọc file PDF.",
-      );
-    }
-  }
-
-  async function choose(files: File[]) {
-    if (inputParsing.isParsing) return;
-    const file = files[0];
-    if (!file) return;
-    setInputError(null);
-    if (file.size > LARGE_FILE_BYTES) {
-      setPending({ kind: "raw-file", file });
-      return;
-    }
-    await parseSelection(file);
-  }
 
   function rotate(pageId: string) {
     setPages((current) =>
@@ -150,9 +116,8 @@ export function OrganizeTool() {
   }
 
   function resetAll() {
-    inputParsing.cancelInputParsing();
+    admission.reset();
     setSource(null);
-    setPending(null);
     setPages([]);
     setOutputName("organized.pdf");
     setInputError(null);
@@ -165,7 +130,7 @@ export function OrganizeTool() {
       description="Đổi thứ tự, xoay hoặc loại bỏ trang trước khi tạo tài liệu mới."
       icon={<FileStack aria-hidden="true" />}
       onReset={resetAll}
-      hasChanges={source !== null}
+      hasChanges={source !== null || admission.isBusy}
       actions={
         source &&
         hasPageChanges &&
@@ -183,9 +148,9 @@ export function OrganizeTool() {
         {!source && (
           <FileDropzone
             accept={["application/pdf", ".pdf"]}
-            disabled={inputParsing.isParsing}
+            disabled={admission.isBusy}
             title="Chọn một file PDF để sắp xếp"
-            onFiles={choose}
+            onFiles={admission.addFiles}
             onError={setInputError}
           />
         )}
@@ -200,11 +165,7 @@ export function OrganizeTool() {
         {job.error && (
           <InlineError message={job.error} onDismiss={job.dismissError} />
         )}
-        {inputParsing.isParsing && (
-          <p className="text-sm text-slate-600" role="status">
-            Đang kiểm tra cấu trúc và số trang PDF…
-          </p>
-        )}
+        <FileAdmissionFeedback admission={admission} />
 
         {source && job.status !== "done" && (
           <>
@@ -317,24 +278,6 @@ export function OrganizeTool() {
         )}
       </div>
 
-      <LargeFileWarningDialog
-        isOpen={pending !== null}
-        onOpenChange={(open) => {
-          if (!open) setPending(null);
-        }}
-        totalBytes={pendingPdfBytes(pending)}
-        totalPages={pendingPdfPages(pending)}
-        onContinue={() => {
-          const approved = pending;
-          setPending(null);
-          if (approved?.kind === "raw-file") {
-            void parseSelection(approved.file);
-          } else if (approved?.kind === "parsed") {
-            applySource(approved.value);
-          }
-        }}
-        onCancel={() => setPending(null)}
-      />
     </ToolLayout>
   );
 }

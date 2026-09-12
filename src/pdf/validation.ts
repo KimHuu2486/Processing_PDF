@@ -1,7 +1,7 @@
 import { PdfToolError } from "./errors";
+import { detectImageMimeType } from "./imageFormat";
 import type {
   CropMargins,
-  ImageMimeType,
   InputSizeWarning,
   PageRange,
   PageRotation,
@@ -208,16 +208,6 @@ function isPdfFile(file: File): boolean {
   return file.type === "application/pdf" || /\.pdf$/i.test(file.name);
 }
 
-function imageMimeType(file: File): ImageMimeType | null {
-  if (file.type === "image/jpeg" || /\.jpe?g$/i.test(file.name)) {
-    return "image/jpeg";
-  }
-  if (file.type === "image/png" || /\.png$/i.test(file.name)) {
-    return "image/png";
-  }
-  return null;
-}
-
 export async function fileToPdfInput(file: File, id = createId("pdf")): Promise<PdfInput> {
   if (!isPdfFile(file)) {
     throw new PdfToolError("invalid-input", "Chỉ hỗ trợ file có định dạng PDF.");
@@ -232,14 +222,10 @@ export async function fileToImageInput(
   id = createId("image"),
   rotation: PageRotation = 0,
 ): Promise<import("./types").ImageInput> {
-  const mimeType = imageMimeType(file);
-  if (!mimeType || !VALID_ROTATIONS.has(rotation)) {
+  if (!VALID_ROTATIONS.has(rotation)) {
     throw new PdfToolError("unsupported-image");
   }
-
-  if (file.size === 0) {
-    throw new PdfToolError("invalid-input", "File ảnh rỗng.");
-  }
+  const mimeType = await detectImageMimeType(file);
 
   return {
     id,

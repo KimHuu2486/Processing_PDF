@@ -1,6 +1,8 @@
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+import { imageFile, stubImageDecoder } from "../../test/images";
 
 import { ImagesToPdfTool } from "./ImagesToPdfTool";
 
@@ -23,11 +25,13 @@ function tinyImages(count: number) {
   return Array.from(
     { length: count },
     (_, index) =>
-      new File(["x"], `image-${index + 1}.png`, { type: "image/png" }),
+      imageFile(`image-${index + 1}.png`),
   );
 }
 
 describe("ImagesToPdfTool large-input admission", () => {
+  beforeEach(stubImageDecoder);
+  afterEach(() => vi.unstubAllGlobals());
   it("warns at 201 image pages and lets the user cancel or continue", async () => {
     const user = userEvent.setup();
     const { container } = render(<ImagesToPdfTool />);

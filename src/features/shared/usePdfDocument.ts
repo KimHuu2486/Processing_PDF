@@ -1,45 +1,7 @@
-import {
-  type PDFDocumentLoadingTask,
-  type PDFDocumentProxy,
-} from "pdfjs-dist";
+import type { PDFDocumentProxy } from "pdfjs-dist";
 import { useEffect, useState } from "react";
 
-import { getDocument } from "./pdfJs";
-
-type ScheduledLoad = {
-  cancelled: boolean;
-  run: () => Promise<void>;
-};
-
-const loadQueue: ScheduledLoad[] = [];
-let activeLoads = 0;
-const MAX_CONCURRENT_DOCUMENT_LOADS = 2;
-
-function pumpLoadQueue() {
-  while (
-    activeLoads < MAX_CONCURRENT_DOCUMENT_LOADS &&
-    loadQueue.length > 0
-  ) {
-    const scheduled = loadQueue.shift();
-    if (!scheduled || scheduled.cancelled) continue;
-    activeLoads += 1;
-    void scheduled.run().finally(() => {
-      activeLoads -= 1;
-      pumpLoadQueue();
-    });
-  }
-}
-
-function scheduleLoad(run: () => Promise<void>) {
-  const scheduled: ScheduledLoad = { cancelled: false, run };
-  loadQueue.push(scheduled);
-  pumpLoadQueue();
-  return () => {
-    scheduled.cancelled = true;
-    const index = loadQueue.indexOf(scheduled);
-    if (index >= 0) loadQueue.splice(index, 1);
-  };
-}
+import { loadPdfDocument, type PdfDocumentHandle } from "./pdfDocuments";
 
 type LoadedState = {
   file: File;
@@ -53,35 +15,27 @@ export function usePdfDocument(file: File | null) {
   useEffect(() => {
     if (!file) return;
 
-    let disposed = false;
-    let task: PDFDocumentLoadingTask | null = null;
-
-    const cancelScheduled = scheduleLoad(async () => {
-      try {
-        const buffer = await file.arrayBuffer();
-        if (disposed) return;
-        task = getDocument({
-          data: new Uint8Array(buffer),
-          stopAtErrors: true,
+    const controller = new AbortController();
+    let handle: PdfDocumentHandle | undefined;
+    void loadPdfDocument(file, controller.signal).then(async (loaded) => {
+      if (controller.signal.aborted) {
+        await loaded.close();
+        return;
+      }
+      handle = loaded;
+      setLoaded({ file, document: loaded.document, error: null });
+    }).catch((error: unknown) => {
+      if (!controller.signal.aborted) {
+        setLoaded({
+          file, document: null,
+          error: error instanceof Error ? error.message : "Không thể hiển thị PDF.",
         });
-        const document = await task.promise;
-        if (!document || disposed) return;
-        setLoaded({ file, document, error: null });
-      } catch {
-        if (!disposed) {
-          setLoaded({
-            file,
-            document: null,
-            error: `Không thể hiển thị “${file.name}”.`,
-          });
-        }
       }
     });
 
     return () => {
-      disposed = true;
-      cancelScheduled();
-      if (task) void task.destroy();
+      controller.abort();
+      void handle?.close().catch(() => {});
     };
   }, [file]);
 

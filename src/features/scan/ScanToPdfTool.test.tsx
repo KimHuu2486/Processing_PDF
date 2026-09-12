@@ -1,6 +1,8 @@
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+import { imageFile, stubImageDecoder } from "../../test/images";
 
 import { ScanToPdfTool } from "./ScanToPdfTool";
 
@@ -22,8 +24,10 @@ vi.mock("../shared/usePdfJob", () => ({
 const originalMediaDevices = navigator.mediaDevices;
 
 describe("ScanToPdfTool", () => {
+  beforeEach(stubImageDecoder);
   afterEach(() => {
     vi.restoreAllMocks();
+    vi.unstubAllGlobals();
     Object.defineProperty(navigator, "mediaDevices", {
       configurable: true,
       value: originalMediaDevices,
@@ -95,10 +99,10 @@ describe("ScanToPdfTool", () => {
 
     await user.upload(
       container.querySelector('input[type="file"]') as HTMLInputElement,
-      new File(["image"], "scan.png", { type: "image/png" }),
+      imageFile(),
     );
     await user.click(
-      screen.getByRole("button", { name: "Chụp lại" }),
+      await screen.findByRole("button", { name: "Chụp lại" }),
     );
     expect(
       screen.getByRole("button", { name: "Đang mở camera…" }),

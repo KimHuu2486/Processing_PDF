@@ -166,11 +166,73 @@ test("từ chối PDF hỏng và giữ người dùng tại công cụ", async (
     pdfFile("hong.pdf", Buffer.from("%PDF-1.7\nnot-a-valid-document")),
   );
   await expect(page.getByRole("alert")).toContainText(
-    "PDF có thể bị hỏng hoặc có mật khẩu",
+    "PDF bị hỏng hoặc có cấu trúc không hợp lệ",
   );
   await expect(
     page.getByRole("heading", { level: 1, name: "Tách PDF" }),
   ).toBeVisible();
+});
+
+test("thêm PDF nhiều lượt vẫn giữ file tốt và xem trước sau khi xóa file", async ({ page }) => {
+  await openTool(page, "merge", "Gộp PDF");
+  await upload(page, [
+    pdfFile("a.pdf", await makePdf(1)),
+    pdfFile("broken.pdf", Buffer.from("not a PDF")),
+    pdfFile("b.pdf", await makePdf(2)),
+  ]);
+  await expect(page.getByText(/2 file · 3 trang/)).toBeVisible();
+  await expect(page.getByRole("alert")).toContainText("broken.pdf");
+  await page.locator("figure").last().scrollIntoViewIfNeeded();
+  await expect(page.locator("canvas")).toHaveCount(2);
+  await page.getByRole("button", { name: "Xóa a.pdf", exact: true }).click();
+  await upload(page, pdfFile("c.pdf", await makePdf(1)));
+  await expect(page.getByText(/2 file · 3 trang/)).toBeVisible();
+  await expect(page.getByRole("alert")).toHaveCount(0);
+  await page.locator("figure").last().scrollIntoViewIfNeeded();
+  await expect(page.locator("canvas")).toHaveCount(2);
+  await page.getByRole("button", { name: "Gộp PDF", exact: true }).click();
+  const { bytes } = await expectPdfDownload(page);
+  expect((await PDFDocument.load(bytes)).getPageCount()).toBe(3);
+});
+
+test("kiểm tra ảnh khi thêm và nhận diện PNG mang tên JPG", async ({ page }) => {
+  await openTool(page, "images-to-pdf", "Ảnh sang PDF");
+  await upload(page, [
+    pngFile("good.png"),
+    pngFile("empty.png", Buffer.alloc(0)),
+    pngFile("truncated.png", makePng().subarray(0, 24)),
+    jpegFile("renamed.jpg", makePng()),
+  ]);
+  await expect(page.getByText(/2 ảnh ·/)).toBeVisible();
+  await expect(page.getByRole("alert")).toContainText("empty.png");
+  await expect(page.getByRole("alert")).toContainText("truncated.png");
+  await expect.poll(() => page.locator("img").evaluateAll((images) =>
+    images.every((image) => image instanceof HTMLImageElement && image.complete && image.naturalWidth > 0),
+  )).toBe(true);
+  await page.getByRole("button", { name: "Tạo PDF từ ảnh" }).click();
+  const { bytes } = await expectPdfDownload(page);
+  expect((await PDFDocument.load(bytes)).getPageCount()).toBe(2);
+});
+
+test("hủy đọc PDF rồi thêm lại và làm lại công cụ", async ({ page }) => {
+  await page.addInitScript(() => {
+    const read = File.prototype.arrayBuffer;
+    File.prototype.arrayBuffer = function () {
+      return this.name === "waiting.pdf" ? new Promise<ArrayBuffer>(() => {}) : read.call(this);
+    };
+  });
+  await openTool(page, "merge", "Gộp PDF");
+  await upload(page, pdfFile("waiting.pdf", await makePdf(1)));
+  await page.getByRole("button", { name: "Hủy đọc tệp" }).click();
+  await expect(page.getByRole("button", { name: "Chọn tệp", exact: true })).toBeEnabled();
+  const files = [pdfFile("a.pdf", await makePdf(1)), pdfFile("b.pdf", await makePdf(1))];
+  await upload(page, files);
+  await expect(page.getByText(/2 file · 2 trang/)).toBeVisible();
+  await page.getByRole("button", { name: "Làm lại", exact: true }).click();
+  await page.getByRole("button", { name: "Bắt đầu lại", exact: true }).click();
+  await upload(page, files);
+  await expect(page.getByText(/2 file · 2 trang/)).toBeVisible();
+  await expect(page.getByRole("alert")).toHaveCount(0);
 });
 
 test("sắp xếp hỗ trợ xoay, xóa và nút di chuyển thay cho kéo thả", async ({
@@ -340,6 +402,11 @@ test("scan gắn camera mock, chụp ảnh và dừng track khi rời route", as
   ).toBeVisible();
   await page.getByRole("button", { name: "Chụp trang" }).click();
   await expect(page.getByText(/1 ảnh/)).toBeVisible();
+  const originalPreview = await page.locator("img").getAttribute("src");
+  await page.getByRole("button", { name: "Chụp lại", exact: true }).click();
+  await page.getByRole("button", { name: "Chụp ảnh thay thế" }).click();
+  await expect(page.getByText(/1 ảnh/)).toBeVisible();
+  await expect(page.locator("img")).not.toHaveAttribute("src", originalPreview!);
   await page.goto("/processing-pdf/#/");
   await expect
     .poll(() => page.evaluate(() => Boolean(window.__cameraStopped)))

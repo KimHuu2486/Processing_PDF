@@ -145,6 +145,6 @@ describe("SplitTool", () => {
     await user.click(
       screen.getByRole("button", { name: "Vẫn tiếp tục" }),
     );
-    await waitFor(() => expect(mocks.selectPdf).toHaveBeenCalledWith(file));
+    await waitFor(() => expect(mocks.selectPdf).toHaveBeenCalledWith(file, expect.any(AbortSignal)));
   });
 });

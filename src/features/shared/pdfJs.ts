@@ -1,16 +1,29 @@
-import { GlobalWorkerOptions, getDocument } from "pdfjs-dist";
+import { GlobalWorkerOptions, getDocument as createDocument, PDFWorker } from "pdfjs-dist";
 import pdfWorkerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 
 GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
-if (typeof Worker !== "undefined") {
-  const workerState = globalThis as typeof globalThis & {
-    __pdfToolsPreviewWorker?: Worker;
-  };
-  workerState.__pdfToolsPreviewWorker ??= new Worker(pdfWorkerUrl, {
-    type: "module",
-    name: "pdfjs-preview-worker",
+// Start loading the worker with the tool, preserving offline use after page load.
+let owner: PDFWorker | undefined = typeof Worker === "undefined" ? undefined : createOwner();
+
+function createOwner() {
+  const worker = PDFWorker.create({});
+  void worker.promise.catch(() => {
+    worker.destroy();
+    if (owner === worker) owner = undefined;
   });
-  GlobalWorkerOptions.workerPort = workerState.__pdfToolsPreviewWorker;
+  return worker;
 }
 
-export { getDocument };
+/** Loading tasks borrow this worker; task.destroy() only closes their document. */
+export function getDocument(parameters: Parameters<typeof createDocument>[0]) {
+  if (!owner || owner.destroyed) {
+    owner = createOwner();
+  }
+  return createDocument({ ...parameters, worker: owner });
+}
+
+if (import.meta.hot) {
+  import.meta.hot.dispose(() => {
+    owner?.destroy();
+  });
+}

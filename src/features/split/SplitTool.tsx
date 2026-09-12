@@ -5,14 +5,11 @@ import {
   Button,
   FileDropzone,
   InlineError,
-  LargeFileWarningDialog,
   ProcessingProgress,
   ResultDownload,
   ToolLayout,
 } from "../../components";
 import {
-  LARGE_FILE_BYTES,
-  LARGE_PAGE_COUNT,
   defaultOutputName,
   sanitizePdfFilename,
   validatePageRange,
@@ -22,57 +19,27 @@ import { usePdfJob } from "../shared/usePdfJob";
 import {
   bytesLabel,
   makeJobId,
-  pendingPdfBytes,
-  pendingPdfPages,
   selectPdf,
   toPdfInput,
-  type PendingSinglePdf,
   type SelectedPdf,
 } from "../shared/toolUtils";
 import { PdfFileThumbnail } from "../shared/PdfFileThumbnail";
-import { useInputParsing } from "../shared/useInputParsing";
+import { useFileAdmission } from "../shared/useFileAdmission";
+import { FileAdmissionFeedback } from "../shared/FileAdmissionFeedback";
 
 export function SplitTool() {
   const [selected, setSelected] = useState<SelectedPdf | null>(null);
-  const [pending, setPending] =
-    useState<PendingSinglePdf<SelectedPdf> | null>(null);
   const [start, setStart] = useState(1);
   const [end, setEnd] = useState(1);
   const [outputName, setOutputName] = useState("pages_1-1.pdf");
   const [outputNameCustomized, setOutputNameCustomized] = useState(false);
   const [inputError, setInputError] = useState<string | null>(null);
   const job = usePdfJob();
-  const inputParsing = useInputParsing();
-
-  async function parseSelection(file: File) {
-    setInputError(null);
-    try {
-      const parsed = await inputParsing.runInputParsing(() => selectPdf(file));
-      if (!parsed.current) return;
-      const loaded = parsed.value;
-      if (loaded.pageCount > LARGE_PAGE_COUNT) {
-        setPending({ kind: "parsed", value: loaded });
-      } else {
-        applySelected(loaded);
-      }
-    } catch (error) {
-      setInputError(
-        error instanceof Error ? error.message : "Không thể đọc file PDF.",
-      );
-    }
-  }
-
-  async function choose(files: File[]) {
-    if (inputParsing.isParsing) return;
-    const file = files[0];
-    if (!file) return;
-    setInputError(null);
-    if (file.size > LARGE_FILE_BYTES) {
-      setPending({ kind: "raw-file", file });
-      return;
-    }
-    await parseSelection(file);
-  }
+  const admission = useFileAdmission({
+    kind: "pdf",
+    parse: selectPdf,
+    onAccepted: (loaded) => applySelected(loaded[0]),
+  });
 
   function applySelected(value: SelectedPdf) {
     setSelected(value);
@@ -137,9 +104,8 @@ export function SplitTool() {
   }
 
   function resetAll() {
-    inputParsing.cancelInputParsing();
+    admission.reset();
     setSelected(null);
-    setPending(null);
     setStart(1);
     setEnd(1);
     setOutputNameCustomized(false);
@@ -153,16 +119,16 @@ export function SplitTool() {
       description="Trích một khoảng trang liên tục thành tài liệu mới."
       icon={<Scissors aria-hidden="true" />}
       onReset={resetAll}
-      hasChanges={selected !== null}
+      hasChanges={selected !== null || admission.isBusy}
       notice="Số trang bắt đầu từ 1 và bao gồm cả trang đầu lẫn trang cuối."
     >
       <div className="space-y-6">
         {!selected && (
           <FileDropzone
             accept={["application/pdf", ".pdf"]}
-            disabled={inputParsing.isParsing}
+            disabled={admission.isBusy}
             title="Chọn một file PDF"
-            onFiles={choose}
+            onFiles={admission.addFiles}
             onError={setInputError}
           />
         )}
@@ -173,11 +139,7 @@ export function SplitTool() {
         {job.error && (
           <InlineError message={job.error} onDismiss={job.dismissError} />
         )}
-        {inputParsing.isParsing && (
-          <p className="text-sm text-slate-600" role="status">
-            Đang kiểm tra cấu trúc và số trang PDF…
-          </p>
-        )}
+        <FileAdmissionFeedback admission={admission} />
 
         {selected && job.status !== "done" && (
           <section className="space-y-5 rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
@@ -266,24 +228,6 @@ export function SplitTool() {
         )}
       </div>
 
-      <LargeFileWarningDialog
-        isOpen={pending !== null}
-        onOpenChange={(open) => {
-          if (!open) setPending(null);
-        }}
-        totalBytes={pendingPdfBytes(pending)}
-        totalPages={pendingPdfPages(pending)}
-        onContinue={() => {
-          const approved = pending;
-          setPending(null);
-          if (approved?.kind === "raw-file") {
-            void parseSelection(approved.file);
-          } else if (approved?.kind === "parsed") {
-            applySelected(approved.value);
-          }
-        }}
-        onCancel={() => setPending(null)}
-      />
     </ToolLayout>
   );
 }
